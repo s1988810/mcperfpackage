@@ -1,0 +1,53 @@
+---
+- name: Kill memcached server
+  hosts: memcached
+  tags: 
+  - kill_memcached
+  tasks:
+  - name: Kill memcached server       
+    ignore_errors: yes
+    shell: pkill memcached 
+
+- name: Run memcached server
+  hosts: memcached
+  tags: 
+  - run_memcached
+  tasks:
+  - name: Run memcached server
+    command: ~/mcperf/memcached/memcached -t {{ WORKER_THREADS }} -m {{ MEMORY_LIMIT_MB }} -c 32768
+    async: 10000 
+    poll: 0
+  - name: Pin memcached worker threads 
+    command: ~/mcperf/memcached-pt.py {{ WORKER_THREADS }}
+    when: PIN_THREADS is defined and PIN_THREADS|bool == true
+
+- name: Kill agents
+  hosts: agents
+  tags:
+  - kill_agents
+  tasks:
+  - name: Kill agents    
+    ignore_errors: yes
+    shell: pkill mcperf 
+
+- name: Run agents
+  hosts: agents
+  tags: 
+  - run_agents
+  tasks:
+  - name: Run agent
+    shell: ~/mcperf/memcache-perf/mcperf -T 40 -A
+    async: 10000 
+    poll: 0  
+
+- name: Check status
+  hosts: 
+  - agents
+  - memcached
+  tags: 
+  - status
+  tasks:
+  - name: Check memcached status
+    shell: ps aux | grep memcached
+  - name: Check agent status
+    shell: ps aux | grep mcperf
