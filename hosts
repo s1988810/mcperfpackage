@@ -1,0 +1,11 @@
+[master]
+node0
+
+[memcached]
+node1
+
+[agents]
+node2
+node3
+node4
+node5
