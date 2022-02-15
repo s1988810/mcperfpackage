@@ -18,4 +18,5 @@
       - linux-tools-common
       - linux-tools-generic
       - linux-tools-5.4.0-88-generic
+      - powertop
     when: ansible_distribution == 'Ubuntu' and ansible_distribution_version == '20.04' 
