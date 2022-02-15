@@ -207,6 +207,57 @@ class StateProfiling(EventProfiling):
 
     def report(self):
         return self.timeseries
+        
+class PkgStateProfiling(EventProfiling):
+    
+    def __init__(self, sampling_period=0):
+        super().__init__(sampling_period)
+        self.timeseries = {}
+        self.timeseries['C1'] = []
+        self.timeseries['C1E'] = []
+        self.timeseries['C2'] = []
+        self.timeseries['C3'] = []
+        self.timeseries['C6'] = []
+
+    
+    def sample(self, timestamp):
+        cmd = ['powertop', '--csv=powertop_report.txt', '--time=' + str(str(self.sampling_length)) + ';', 'cat', 'powertop_report.txt', '|',  'grep', '-m', '1', '-A10', '"Package"']
+        result = subprocess.run(cmd, stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        lines = result.stdout.decode('utf-8').splitlines() + result.stderr.decode('utf-8').splitlines()
+        for l in lines:
+            if 'C1;' in l:
+                res_val = float(l.split(' ')[1])
+                self.timeseries['C1'].append((timestamp, res_val))
+            if 'C1E;' in l:
+                res_val = float(l.split(' ')[1])
+                self.timeseries['C1E'].append((timestamp, res_val))
+            if 'C2;' in l:
+                res_val = float(l.split(' ')[1])
+                self.timeseries['C2'].append((timestamp, res_val))
+            if 'C3;' in l:
+                res_val = float(l.split(' ')[1])
+                self.timeseries['C3'].append((timestamp, res_val))
+            if 'C6;' in l:
+                res_val = float(l.split(' ')[1])
+                self.timeseries['C6'].append((timestamp, res_val)) 
+                
+    def interrupt_sample(self):
+        os.system('sudo pkill -9 powertop')
+        pass
+
+    def zerosample(self, timestamp):
+        pass
+
+    def clear(self):
+        self.timeseries = {}
+        self.timeseries['C1'] = []
+        self.timeseries['C1E'] = []
+        self.timeseries['C2'] = []
+        self.timeseries['C3'] = []
+        self.timeseries['C6'] = []
+
+    def report(self):
+        return self.timeseries
 
 class ProfilingService:
     def __init__(self, profilers):
@@ -234,7 +285,10 @@ def server(port):
     perf_event_profiling = PerfEventProfiling(sampling_period=30,sampling_length=30)
     mpstat_profiling = MpstatProfiling()
     state_profiling = StateProfiling(sampling_period=0)
-    profiling_service = ProfilingService([perf_event_profiling, mpstat_profiling, state_profiling])
+    #pkgstatemsr_profiling = PkgStateMSRProfiling(sampling_period=0)
+    #pkgstateturbostat_profiling = PkgStateTurbostatProfiling(sampling_period=30)
+    pkgstate_profiling = PkgStateProfiling(sampling_period=30,sampling_length=30)
+    profiling_service = ProfilingService([perf_event_profiling, mpstat_profiling, state_profiling, pkgstate_profiling])
     hostname = socket.gethostname().split('.')[0]
     server = SimpleXMLRPCServer((hostname, port), allow_none=True)
     server.register_instance(profiling_service)
