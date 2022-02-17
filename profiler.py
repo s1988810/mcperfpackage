@@ -242,7 +242,6 @@ class PkgStateProfiling(EventProfiling):
             if 'C6;' in l:
                 res_val = str(l.split(' ')[1].strip('%'))
                 self.timeseries['C6'].append((timestamp, res_val)) 
-        print(self.timeseries)
         
     def interrupt_sample(self):
         os.system('sudo pkill -9 powertop')
@@ -343,8 +342,6 @@ class ReportAction:
         if not os.path.exists(directory):
             os.makedirs(directory)        
         for metric_name,timeseries in stats.items():
-            print(metric_name)
-            print(timeseries)
             metric_file_name = metric_name.replace('/', '-')
             metric_file_path = os.path.join(directory, metric_file_name)
             with open(metric_file_path, 'w') as mf:
