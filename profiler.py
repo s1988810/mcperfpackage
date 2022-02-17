@@ -210,7 +210,7 @@ class StateProfiling(EventProfiling):
         
 class PkgStateProfiling(EventProfiling):
     
-    def __init__(self, sampling_period=0):
+    def __init__(self, sampling_period=0, sampling_length = 1):
         super().__init__(sampling_period)
         self.timeseries = {}
         self.timeseries['C1'] = []
@@ -221,26 +221,29 @@ class PkgStateProfiling(EventProfiling):
 
     
     def sample(self, timestamp):
-        cmd = ['powertop', '--csv=powertop_report.txt', '--time=' + str(str(self.sampling_length)) + ';', 'cat', 'powertop_report.txt', '|',  'grep', '-m', '1', '-A10', '"Package"']
+        cmd = ['sudo', 'powertop', '--csv=powertop_report.txt', '--time=30;']
+        result = subprocess.run(cmd, stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        cmd = [ 'grep', '-m', '1', '-A10', 'Package', 'powertop_report.txt']
         result = subprocess.run(cmd, stdout=subprocess.PIPE,stderr=subprocess.PIPE)
         lines = result.stdout.decode('utf-8').splitlines() + result.stderr.decode('utf-8').splitlines()
         for l in lines:
             if 'C1;' in l:
-                res_val = float(l.split(' ')[1])
+                res_val = str(l.split(' ')[1].strip('%'))
                 self.timeseries['C1'].append((timestamp, res_val))
             if 'C1E;' in l:
-                res_val = float(l.split(' ')[1])
+                res_val = str(l.split(' ')[2].strip('%'))
                 self.timeseries['C1E'].append((timestamp, res_val))
             if 'C2;' in l:
-                res_val = float(l.split(' ')[1])
+                res_val = str(l.split(' ')[1].strip('%'))
                 self.timeseries['C2'].append((timestamp, res_val))
             if 'C3;' in l:
-                res_val = float(l.split(' ')[1])
+                res_val = str(l.split(' ')[1].strip('%'))
                 self.timeseries['C3'].append((timestamp, res_val))
             if 'C6;' in l:
-                res_val = float(l.split(' ')[1])
+                res_val = str(l.split(' ')[1].strip('%'))
                 self.timeseries['C6'].append((timestamp, res_val)) 
-                
+        print(self.timeseries)
+        
     def interrupt_sample(self):
         os.system('sudo pkill -9 powertop')
         pass
@@ -340,6 +343,8 @@ class ReportAction:
         if not os.path.exists(directory):
             os.makedirs(directory)        
         for metric_name,timeseries in stats.items():
+            print(metric_name)
+            print(timeseries)
             metric_file_name = metric_name.replace('/', '-')
             metric_file_path = os.path.join(directory, metric_file_name)
             with open(metric_file_path, 'w') as mf:
