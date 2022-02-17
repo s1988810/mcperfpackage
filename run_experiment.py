@@ -190,7 +190,7 @@ def run_multiple_experiments(root_results_dir, batch_name, system_conf, batch_co
     name_prefix = "turbo={}-kernelconfig={}-".format(system_conf['turbo'], system_conf['kernelconfig'])
     #request_qps = [10000, 50000, 100000, 200000, 300000, 400000, 500000, 1000000, 2000000]
     #request_qps = [10000, 50000, 100000, 200000, 300000, 400000, 500000, 600000, 700000, 800000]
-    request_qps = [10000, 50000, 100000, 200000, 300000, 400000, 500000]
+    request_qps = [50000]
     root_results_dir = os.path.join(root_results_dir, batch_name)
     set_uncore_freq(system_conf, 2000)
     for qps in request_qps:
@@ -204,10 +204,10 @@ def main(argv):
     system_confs = [
 ##        {'turbo': True,  'kernelconfig': 'vanilla'},
 ##        {'turbo': False,  'kernelconfig': 'vanilla'},
-#         {'turbo': False, 'kernelconfig': 'baseline'},
+         {'turbo': False, 'kernelconfig': 'baseline'},
 #         {'turbo': False, 'kernelconfig': 'disable_c6'},
 #         {'turbo': True, 'kernelconfig': 'baseline'},
-         {'turbo': False, 'kernelconfig': 'disable_cstates'},
+#         {'turbo': False, 'kernelconfig': 'disable_cstates'},
 ##         {'turbo': False, 'kernelconfig': 'disable_c6'},
 #         {'turbo': True, 'kernelconfig': 'disable_c6'},
 #         {'turbo': False, 'kernelconfig': 'disable_c1e_c6'},
@@ -238,7 +238,7 @@ def main(argv):
     batch_name = argv[0]
     for iter in range(0, 3):
         for system_conf in system_confs:
-            run_multiple_experiments('/users/hvolos01/data', batch_name, system_conf, batch_conf, iter)
+            run_multiple_experiments('/users/ganton12/data', batch_name, system_conf, batch_conf, iter)
 
 if __name__ == '__main__':
     main(sys.argv[1:])
