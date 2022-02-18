@@ -221,27 +221,39 @@ class PkgStateProfiling(EventProfiling):
 
     
     def sample(self, timestamp):
-        cmd = ['sudo', 'powertop', '--csv=powertop_report.txt', '--time=30;']
+        flag=False
+        cmd = ['sudo', 'powertop', '--csv=powertop_report.txt', '--time=25;']
+        
         result = subprocess.run(cmd, stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-        cmd = [ 'grep', '-m', '1', '-A10', 'Package', 'powertop_report.txt']
-        result = subprocess.run(cmd, stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-        lines = result.stdout.decode('utf-8').splitlines() + result.stderr.decode('utf-8').splitlines()
+        file = open('/users/ganton12/powertop_report.txt', 'r')
+        lines = file.readlines()
+        #task=subprocess.check_output(["cat ~/powertop_report.txt"]).decode(sys.stdout.encoding)
+        #cmd = ['cat', '~/powertop_report.txt']
+        #result = subprocess.run(cmd, stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        #lines = result.stdout.decode('utf-8').splitlines()
+        print(lines)
         for l in lines:
-            if 'C1;' in l:
-                res_val = str(l.split(' ')[1].strip('%'))
+            print(l)
+            print("empika")
+            if 'Package;0' in l:
+                flag=True
+            if 'C1;' in l and flag==True:
+                res_val = str(l.split(';')[1].strip('%'))
                 self.timeseries['C1'].append((timestamp, res_val))
-            if 'C1E;' in l:
-                res_val = str(l.split(' ')[2].strip('%'))
+            if 'C1E;' in l and flag==True:
+                res_val = str(l.split(';')[1].strip('%'))
                 self.timeseries['C1E'].append((timestamp, res_val))
-            if 'C2;' in l:
-                res_val = str(l.split(' ')[1].strip('%'))
+            if 'C2;' in l and flag==True:
+                res_val = str(l.split(';')[1].strip('%'))
                 self.timeseries['C2'].append((timestamp, res_val))
-            if 'C3;' in l:
-                res_val = str(l.split(' ')[1].strip('%'))
+            if 'C3;' in l and flag==True:
+                res_val = str(l.split(';')[1].strip('%'))
                 self.timeseries['C3'].append((timestamp, res_val))
-            if 'C6;' in l:
-                res_val = str(l.split(' ')[1].strip('%'))
-                self.timeseries['C6'].append((timestamp, res_val)) 
+            if 'C6;' in l and flag==True:
+                res_val = str(l.split(';')[1].strip('%'))
+                self.timeseries['C6'].append((timestamp, res_val))
+                flag=False
+        print(self.timeseries)
         
     def interrupt_sample(self):
         os.system('sudo pkill -9 powertop')
