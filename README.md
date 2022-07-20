@@ -1,3 +1,10 @@
+# Installing Dependencies For Profiler 
+
+```
+git clone https://github.com/andikleen/pmu-tools
+````
+
+
 # Running experiments
 
 ```
