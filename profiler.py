@@ -97,14 +97,14 @@ class TopDownProfiling(EventProfiling):
     
     def get_events(self):
         events = []
-        cmd = ['sudo', 'python3', self.pmu_path, '-l3', '-v', '--no-desc', '/users/ganton12/mcperf/spin', '1']
+        cmd = ['sudo', 'python3', self.pmu_path, '-l6', '-v', '-m', '--no-desc', '/users/ganton12/mcperf/spin', '1']
         result = subprocess.run(cmd, stdout=subprocess.PIPE,stderr=subprocess.PIPE)
         out = result.stdout.decode('utf-8').splitlines() + result.stderr.decode('utf-8').splitlines()
          
         
         for l in out:
             l = l.lstrip()
-            m = re.match("([A-Z]+[a-zA-Z\/].*)+\s+([a-zA-z0-9\._]+)\s+(%.+)\s(.+)\s(.+)", l) 
+            m = re.match("[A-Z]+([a-zA-Z0-9\/\._])+\s+([a-zA-Z0-9\._]+)\s+", l) 
             if m:
                 events.append(m.group(2))
         
@@ -120,10 +120,11 @@ class TopDownProfiling(EventProfiling):
         out = result.stdout.decode('utf-8').splitlines() + result.stderr.decode('utf-8').splitlines()
               
         for l in out:
-            
+            print(l)
             l = l.strip()
             m = re.match("([0-9]+\.+[0-9]+)\s([A-Z]+[a-zA-Z\/]*)+\s+([a-zA-z0-9\._]+)\s+(%)+\s[a-zA-Z]+\s+([0-9]+\.+[0-9]+)\s",l) 
             if m:
+                print(m.group(3) + " " + m.group(5))
                 self.timeseries[m.group(3)].append((timestamp, str(m.group(5))))
           
         
@@ -919,10 +920,10 @@ def server(port,perf_iteration):
    
     #upi_profiling = PcmUpiProfiling(sampling_period=30, sampling_length=30)
     #pcie_profiling = PcmPcieProfiling(sampling_period=120,sampling_length=120)
-    state_profiling = StateProfiling(sampling_period=0)
-    rapl_profiling = RaplCountersProfiling(sampling_period=0)
+    #state_profiling = StateProfiling(sampling_period=0)
+    #rapl_profiling = RaplCountersProfiling(sampling_period=0)
     #pkg_profiling = pkg_turbostat_profiling(sampling_period=30,sampling_length=30)
-    profiling_service = ProfilingService([ state_profiling, rapl_profiling, pmu_topdown])
+    profiling_service = ProfilingService([pmu_topdown])
 
     hostname = socket.gethostname().split('.')[0]
     server = SimpleXMLRPCServer((hostname, port), allow_none=True)
