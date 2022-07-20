@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 from xmlrpc.server import SimpleXMLRPCServer
 import xmlrpc.client
 import argparse
@@ -10,8 +8,10 @@ import sys
 import socket
 import time
 import threading
-import subprocess
+import subprocess 
+from subprocess import call
 import re
+import math
 
 # TODO: ProfilerGroup has a tick thread that wakes up at the minimum sampling period and wakes up each profiler if it has to wake up
 # TODO: Use sampling period and sampling length
@@ -44,13 +44,16 @@ class EventProfiling:
         logging.info("Profiling thread terminated")
 
     def start(self):
+        
         self.clear()
         if self.sampling_period:
+            
             self.is_active=True
             self.thread = threading.Thread(target=EventProfiling.profile_thread, args=(self,))
             self.thread.daemon = True
             self.thread.start()
         else:
+            
             timestamp = str(int(time.time()))
             self.sample(timestamp)
 
@@ -65,16 +68,502 @@ class EventProfiling:
             timestamp = str(int(time.time()))
             self.sample(timestamp)
 
-
-class PerfEventProfiling(EventProfiling):
-    def __init__(self, sampling_period=1, sampling_length=1):
+class TopDownProfiling(EventProfiling):
+    def __init__(self, sampling_period=30,sampling_length=30, iteration=1):
+        
         super().__init__(sampling_period, sampling_length)
-        self.perf_path = self.find_perf_path()
-        logging.info('Perf found at {}'.format(self.perf_path)) 
-        self.events = self.get_perf_power_events()
+        self.pmu_path = self.find_pmu_path()
+        logging.info('Pmu found at {}'.format(self.pmu_path)) 
+        
+        self.events = self.get_events()      
+        self.timeseries = {}
+        self.iteration=iteration
+	
+        for e in self.events:
+            self.timeseries[e] = []
+         
+        
+        #get pid of memcached    
+        cmd = ['pgrep', 'memcached']
+        result = subprocess.run(cmd, stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        out = result.stdout.decode('utf-8').splitlines() + result.stderr.decode('utf-8').splitlines()
+        self.pid=out[0]
+    
+    def find_pmu_path(self):
+        cmd = ['find', '/users/ganton12', '-name', 'toplev.py']
+        result = subprocess.run(cmd, stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        out = result.stdout.decode('utf-8').splitlines() + result.stderr.decode('utf-8').splitlines()
+        return out[0]
+    
+    def get_events(self):
+        events = []
+        cmd = ['sudo', 'python3', self.pmu_path, '-l3', '-v', '--no-desc', '/users/ganton12/mcperf/spin', '1']
+        result = subprocess.run(cmd, stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        out = result.stdout.decode('utf-8').splitlines() + result.stderr.decode('utf-8').splitlines()
+         
+        
+        for l in out:
+            l = l.lstrip()
+            m = re.match("([A-Z]+[a-zA-Z\/].*)+\s+([a-zA-z0-9\._]+)\s+(%.+)\s(.+)\s(.+)", l) 
+            if m:
+                events.append(m.group(2))
+        
+        return events
+
+    def sample(self, timestamp):
+    
+        level=self.iteration%6 + 1
+        
+        cmd = ['sudo', self.pmu_path, '-l' + str(level), '-v', '-m', '--no-desc', '-I', '30000', '-p', self.pid]
+        
+        result = subprocess.run(cmd, stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        out = result.stdout.decode('utf-8').splitlines() + result.stderr.decode('utf-8').splitlines()
+              
+        for l in out:
+            
+            l = l.strip()
+            m = re.match("([0-9]+\.+[0-9]+)\s([A-Z]+[a-zA-Z\/]*)+\s+([a-zA-z0-9\._]+)\s+(%)+\s[a-zA-Z]+\s+([0-9]+\.+[0-9]+)\s",l) 
+            if m:
+                self.timeseries[m.group(3)].append((timestamp, str(m.group(5))))
+          
+        
+    def zerosample(self, timestamp):
+        for e in self.events:
+            self.timeseries[e].append((timestamp, str(0.0)))
+
+    def interrupt_sample(self):
+        os.system("sudo pkill -9 perf")
+
+    def clear(self):
         self.timeseries = {}
         for e in self.events:
             self.timeseries[e] = []
+
+    def report(self):
+        return self.timeseries
+
+class VtunePcieProfiling(EventProfiling):
+    def __init__(self, sampling_period=1, sampling_length=1):
+        super().__init__(sampling_period, sampling_length)
+        self.vtune_pcie_path = "/opt/intel/oneapi/vtune/2022.3.0/bin64/vtune"
+        
+        self.events_label = VtunePcieProfiling.get_events_label()
+        self.events = VtunePcieProfiling.get_pcie_events()
+        self.timeseries = {}
+        for e in self.events:
+            self.timeseries.setdefault(e, [])
+
+    def get_events_label():
+        events = []
+        events.append("Inbound PCIe Read, MB/sec: ")
+        events.append("Average Latency, ns: ")
+        events.append("Inbound PCIe Write, MB/sec: ")
+        events.append("Average Latency, ns: ")
+        events.append("Outbound PCIe Read, MB/sec: ")
+        events.append("Outbound PCIe Write, MB/sec: ")
+        return events 
+
+    def get_pcie_events():
+        events = []
+        events.append("Inbound_PCIe_Read_BW")
+        events.append("Inbound_PCIe_Read_Latency")
+        events.append("Inbound_PCIe_Write_BW")
+        events.append("Inbound_PCIe_Write_Latency")
+        events.append("Outbound_PCIe_Read_BW")
+        events.append("Outbound_PCIe_Write_BW")
+        return events
+
+    def sample(self, timestamp):
+       
+        cmd = ['sudo', self.vtune_pcie_path,  '-collect' , 'io' , '--' ,'sleep', '10']
+        
+        result = subprocess.run(cmd, stdout=subprocess.PIPE)
+        out = result.stdout.decode('utf-8').splitlines()
+        #print(out)       
+        latency_occurences=0
+        for l in out:
+            print(l)
+            for e in self.events_label:
+                if e in l:
+                  i = self.events_label.index(e)
+                  print(l)
+                  print(e)
+                  print(str(i) + " " + str(latency_occurences))
+                  if "Average Latency" in l:
+                      self.timeseries[self.events[latency_occurences]].append(l.split(e)[1])
+                  else:
+                      self.timeseries[self.events[i]].append(l.split(e)[1])
+                  latency_occurences = latency_occurences + 1 
+        
+        print(self.timeseries)
+#        for e in self.perf_stats_events:
+#            for l in out:
+#                l = l.lstrip()
+#                if e in l:
+#                    value=l.split()[-(len(e.split())+1)]
+#                    self.timeseries[e].append((timestamp, str(float(value.replace(',', '')))))
+                
+    # FIXME: Currently, we add a dummy zero sample when we finish sampling. 
+    # This helps us to determine the sampling duration later when we analyze the stats
+    # It would be nice to have a more clear solution
+    def zerosample(self, timestamp):
+        for e in self.events:
+            self.timeseries[e].append((timestamp, str(0)))
+            
+    def interrupt_sample(self):
+        pass
+        #os.system('sudo /opt/intel/oneapi/vtune/2022.3.0/bin64/vtune -r /users/ganton12/mcperf/r000io -command stop')
+        #os.system('sudo pkill -9 vtune')
+
+    def clear(self):
+        os.system('sudo rm -r ./r00*')
+        self.timeseries = {}
+        for e in self.events:
+            self.timeseries[e] = []
+
+    def report(self):
+        return self.timeseries
+
+
+
+
+class PcmUpiProfiling(EventProfiling):
+    def __init__(self, sampling_period=1, sampling_length=1):
+        super().__init__(sampling_period, sampling_length)
+        self.pcm_upi_path = "/users/ganton12/pcm/build/bin/pcm"
+        
+        self.events = PcmUpiProfiling.get_upi_events()
+        self.timeseries = {}
+        for e in self.events:
+            cpu_str = "SKT0_{}".format(e)
+            self.timeseries.setdefault(cpu_str, [])
+            cpu_str = "SKT1_{}".format(e)
+            self.timeseries.setdefault(cpu_str, [])
+
+    def get_upi_events():
+        events = []
+        events.append("UPI0_In")
+        events.append("UPI1_In")
+        events.append("UPI0_Out")
+        events.append("UPI1_Out")
+        return events
+
+    def sample(self, timestamp):
+       
+        cmd = ['sudo', self.pcm_upi_path,  str(self.sampling_length), "-i=1"]
+        
+        result = subprocess.run(cmd, stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        out = result.stdout.decode('utf-8').splitlines() + result.stderr.decode('utf-8').splitlines()
+        socket = {}
+        events_out = []
+        flag=0
+
+        #for e in self.events:
+        #   all_events = all_events + "\t|\t" + e
+        #print(all_events) 
+        for l in out:
+            if "data traffic coming to CPU/socket through UPI" in l:
+                events_out = l.split()
+                flag=1
+                continue
+            if flag != 0:
+                flag = flag + 1
+            if flag >= 5 and flag < 7:
+               socket[flag-5] = l.split()
+            elif flag >= 7 :
+               break
+        
+        if socket:
+            if socket[0][3] == "K":
+                self.timeseries["SKT0_UPI0_In"].append((timestamp, str(socket[0][2] + "000")))
+                next_index = 4
+            elif socket[0][3] == "M":
+                self.timeseries["SKT0_UPI0_In"].append((timestamp, str(socket[0][2] + "000000")))
+                next_index = 4
+            elif socket[0][3] == "G":
+                self.timeseries["SKT0_UPI0_In"].append((timestamp, str(socket[0][2] + "000000000")))
+                next_index = 4
+            else:
+                next_index = 3
+                self.timeseries["SKT0_UPI0_In"].append((timestamp, str(socket[0][2])))
+       
+            if len(socket[0]) >= (next_index+1) and socket[0][next_index+1] == "K":
+                self.timeseries["SKT0_UPI1_In"].append((timestamp, str(socket[0][next_index] + "000")))
+            elif len(socket[0]) >= (next_index+1) and socket[0][next_index+1] == "M":
+                self.timeseries["SKT0_UPI1_In"].append((timestamp, str(socket[0][next_index] + "000000")))
+            elif len(socket[0]) >= (next_index+1) and socket[0][next_index+1] == "G":
+                self.timeseries["SKT0_UPI1_In"].append((timestamp, str(socket[0][next_index] + "000000000")))
+            else:
+                self.timeseries["SKT0_UPI1_In"].append((timestamp, str(socket[0][next_index-1])))
+
+            if socket[1][3] == "K":
+                self.timeseries["SKT1_UPI0_In"].append((timestamp, str(socket[1][2] + "000")))
+                next_index = 4
+            elif socket[1][3] == "M":
+                self.timeseries["SKT1_UPI0_In"].append((timestamp, str(socket[1][2] + "000000")))
+            elif len(socket[0]) >= (next_index+1) and socket[0][next_index+1] == "G":
+                self.timeseries["SKT1_UPI0_In"].append((timestamp, str(socket[0][next_index] + "000000000")))
+                next_index = 4
+            else:
+                next_index = 3
+                self.timeseries["SKT1_UPI0_In"].append((timestamp, str(socket[1][2])))
+       
+            if len(socket[1]) >= (next_index+1) and socket[1][next_index+1] == "K":
+                self.timeseries["SKT1_UPI1_In"].append((timestamp, str(socket[1][next_index] + "000")))
+            elif len(socket[1]) >= (next_index+1) and socket[1][next_index+1] == "M":
+                self.timeseries["SKT1_UPI1_In"].append((timestamp, str(socket[1][next_index] + "000000")))
+            elif len(socket[1]) >= (next_index+1) and socket[1][next_index+1] == "G":
+                self.timeseries["SKT1_UPI1_In"].append((timestamp, str(socket[1][next_index] + "000000000")))
+            else:
+                self.timeseries["SKT1_UPI1_In"].append((timestamp, str(socket[1][next_index-1])))
+      
+        socket = {}
+        flag=0
+        for l in out:
+            if "data and non-data traffic outgoing from CPU/socket through UPI links" in l:
+                events_out = l.split()
+                flag=1
+                continue
+            if flag != 0:
+                flag = flag + 1
+            if flag >= 5 and flag < 7:
+                socket[flag-5] = l.split()
+            elif flag > 7:
+                break
+        
+        if socket:
+            if socket[0][3] == "K":
+                self.timeseries["SKT0_UPI0_Out"].append((timestamp, str(socket[0][2] + "000")))
+                next_index = 4
+            elif socket[0][3] == "M":
+                self.timeseries["SKT0_UPI0_Out"].append((timestamp, str(socket[0][2] + "000000")))
+                next_index = 4
+            elif socket[0][3] == "G":
+                self.timeseries["SKT0_UPI0_Out"].append((timestamp, str(socket[0][2] + "000000000")))
+                next_index = 4
+            else:
+                next_index = 3
+                self.timeseries["SKT0_UPI0_Out"].append((timestamp, str(socket[0][2])))
+       
+            if len(socket[0]) >= (next_index+1) and socket[0][next_index+1] == "K":
+                self.timeseries["SKT0_UPI1_Out"].append((timestamp, str(socket[0][next_index] + "000")))
+            elif len(socket[0]) >= (next_index+1) and socket[0][next_index+1] == "M":
+                self.timeseries["SKT0_UPI1_Out"].append((timestamp, str(socket[0][next_index] + "000000")))
+            elif len(socket[0]) >= (next_index+1) and socket[0][next_index+1] == "G":
+                self.timeseries["SKT0_UPI1_Out"].append((timestamp, str(socket[0][next_index] + "000000000")))
+            else:
+                self.timeseries["SKT0_UPI1_Out"].append((timestamp, str(socket[0][next_index-1])))
+
+            if socket[1][3] == "K":
+                self.timeseries["SKT1_UPI0_Out"].append((timestamp, str(socket[1][2] + "000")))
+                next_index = 4
+            elif socket[1][3] == "M":
+                self.timeseries["SKT1_UPI0_Out"].append((timestamp, str(socket[1][2] + "000000")))
+                next_index = 4
+            elif socket[1][3] == "G":
+                self.timeseries["SKT1_UPI0_Out"].append((timestamp, str(socket[1][2] + "000000000")))
+                next_index = 4
+            else:
+                next_index = 3
+                self.timeseries["SKT1_UPI0_Out"].append((timestamp, str(socket[1][2])))
+       
+            if len(socket[1]) >= (next_index+1) and socket[1][next_index+1] == "K":
+                self.timeseries["SKT1_UPI1_Out"].append((timestamp, str(socket[1][next_index] + "000")))
+            elif len(socket[1]) >= (next_index+1) and socket[1][next_index+1] == "M":
+                self.timeseries["SKT1_UPI1_Out"].append((timestamp, str(socket[1][next_index] + "000000")))
+            elif len(socket[1]) >= (next_index+1) and socket[1][next_index+1] == "G":
+                self.timeseries["SKT1_UPI1_Out"].append((timestamp, str(socket[1][next_index] + "000000000")))
+            else:
+                self.timeseries["SKT1_UPI1_Out"].append((timestamp, str(socket[1][next_index-1])))
+       
+        
+      
+
+#        for e in self.perf_stats_events:
+#            for l in out:
+#                l = l.lstrip()
+#                if e in l:
+#                    value=l.split()[-(len(e.split())+1)]
+#                    self.timeseries[e].append((timestamp, str(float(value.replace(',', '')))))
+                
+    # FIXME: Currently, we add a dummy zero sample when we finish sampling. 
+    # This helps us to determine the sampling duration later when we analyze the stats
+    # It would be nice to have a more clear solution
+    def zerosample(self, timestamp):
+        for e in self.events:
+            cpu_str = "SKT0_{}".format(e)
+            self.timeseries[cpu_str].append((timestamp, str(0.0)))
+            cpu_str = "SKT1_{}".format(e)
+            self.timeseries[cpu_str].append((timestamp, str(0.0)))
+
+    def interrupt_sample(self):
+        os.system('sudo pkill -9 pcm')
+
+    def clear(self):
+        self.timeseries = {}
+        for e in self.events:
+            cpu_str = "SKT0_{}".format(e)
+            self.timeseries[cpu_str] = []
+            cpu_str = "SKT1_{}".format(e)
+            self.timeseries[cpu_str] = []
+
+    def report(self):
+        return self.timeseries
+
+class PcmPcieProfiling(EventProfiling):
+    def __init__(self, sampling_period=1, sampling_length=1):
+        super().__init__(sampling_period, sampling_length)
+        self.pcm_pcie_path = "/users/ganton12/pcm/build/bin/pcm-pcie"
+        
+        self.events = PcmPcieProfiling.get_pcie_events()
+        self.timeseries = {}
+        for e in self.events:
+            cpu_str = "SKT0_{}".format(e)
+            self.timeseries.setdefault(cpu_str, [])
+            cpu_str = "SKT1_{}".format(e)
+            self.timeseries.setdefault(cpu_str, [])
+
+    def get_pcie_events():
+        events = []
+        events.append("PCIRdCur")
+        events.append("RFO")
+        events.append("CRd")
+        events.append("DRd")
+        events.append("ItoM")
+        events.append("PRd")
+        events.append("WiL")  
+        return events
+
+    def sample(self, timestamp):
+       
+        cmd = ['sudo', self.pcm_pcie_path,  str(self.sampling_length/2), "-i=1"]
+        
+        result = subprocess.run(cmd, stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        out = result.stdout.decode('utf-8').splitlines() + result.stderr.decode('utf-8').splitlines()
+        socket = {}
+        events_out = []
+        flag=0
+        all_events = ""
+        
+        #for e in self.events:
+        #   all_events = all_events + "\t|\t" + e
+        #print(all_events) 
+        for l in out:
+            if "Skt " in l:
+                events_out = l.split()
+                flag=1
+                continue
+            if flag > 0 and flag < 3 :
+                socket[flag-1] = l.split()
+                flag = flag + 1
+            elif flag > 2:
+                break
+        
+        try:
+            while True:
+               events_out.remove("|")
+        except ValueError:
+               pass
+        for e in events_out[1:]:
+            index_temp = events_out.index(e)
+            temp = index_temp
+            cur_index=1
+            for elem in socket[0][1:]:
+                
+                if "K" in elem or "M" in elem or "G" in elem:
+                    
+                    temp = temp + 1
+                if cur_index == temp:
+                    break
+                cur_index = cur_index + 1
+            if len(socket[0]) > (cur_index+1) and (socket[0][cur_index+1] != "K" and socket[0][cur_index+1] != "M" and socket[0][cur_index +1] != "G"):
+                self.timeseries["SKT0_" + e].append((timestamp, str(socket[0][cur_index])))
+            elif len(socket[0]) == (cur_index+1):
+                self.timeseries["SKT0_" + e].append((timestamp, str(socket[0][cur_index])))
+            elif socket[0][cur_index+1] == "K": 
+                self.timeseries["SKT0_" + e].append((timestamp, str(socket[0][cur_index] + "000")))
+            elif socket[0][cur_index+1] == "M": 
+                self.timeseries["SKT0_" + e].append((timestamp, str(socket[0][cur_index] + "000000")))
+            elif socket[0][cur_index+1] == "G": 
+                self.timeseries["SKT0_" + e].append((timestamp, str(socket[0][cur_index] + "000000000")))
+            
+            temp = index_temp
+            cur_index=1
+            for elem in socket[1][1:]:
+                if "K" in elem or "M" in elem or "G" in elem:
+                    temp = temp + 1
+                if cur_index == temp:
+                    break
+                cur_index = cur_index + 1
+            if len(socket[1]) > (cur_index+1) and socket[1][cur_index+1] != "K" and socket[1][cur_index+1] != "M" and socket[1][cur_index+1] != "G":
+                self.timeseries["SKT1_" + e].append((timestamp, str(socket[1][cur_index])))
+            elif len(socket[1]) == (cur_index+1):
+                self.timeseries["SKT1_" + e].append((timestamp, str(socket[1][cur_index])))
+            elif socket[1][cur_index+1] == "K": 
+                self.timeseries["SKT1_" + e].append((timestamp, str(socket[1][cur_index] + "000")))
+            elif socket[1][cur_index+1] == "M": 
+                self.timeseries["SKT1_" + e].append((timestamp, str(socket[1][cur_index] + "000000")))
+            elif socket[1][cur_index+1] == "G": 
+                self.timeseries["SKT1_" + e].append((timestamp, str(socket[1][cur_index] + "000000000")))
+         
+
+#        for e in self.perf_stats_events:
+#            for l in out:
+#                l = l.lstrip()
+#                if e in l:
+#                    value=l.split()[-(len(e.split())+1)]
+#                    self.timeseries[e].append((timestamp, str(float(value.replace(',', '')))))
+                
+    # FIXME: Currently, we add a dummy zero sample when we finish sampling. 
+    # This helps us to determine the sampling duration later when we analyze the stats
+    # It would be nice to have a more clear solution
+    def zerosample(self, timestamp):
+        for e in self.events:
+            cpu_str = "SKT0_{}".format(e)
+            self.timeseries[cpu_str].append((timestamp, str(0.0)))
+            cpu_str = "SKT1_{}".format(e)
+            self.timeseries[cpu_str].append((timestamp, str(0.0)))
+
+    def interrupt_sample(self):
+        os.system('sudo pkill -9 pcm-pcie')
+
+    def clear(self):
+        self.timeseries = {}
+        for e in self.events:
+            cpu_str = "SKT0_{}".format(e)
+            self.timeseries[cpu_str] = []
+            cpu_str = "SKT1_{}".format(e)
+            self.timeseries[cpu_str] = []
+
+    def report(self):
+        return self.timeseries
+
+class PerfEventProfiling(EventProfiling):
+    def __init__(self, sampling_period=1, sampling_length=1, iteration=1):
+        print(sampling_period)
+        super().__init__(sampling_period, sampling_length)
+        self.perf_path = self.find_perf_path()
+        
+        logging.info('Perf found at {}'.format(self.perf_path)) 
+        
+        self.events = PerfEventProfiling.get_microarchitectural_events()
+        self.perf_stats_events = PerfEventProfiling.get_perf_stat_events()
+        
+        self.timeseries = {}
+        self.iteration=iteration
+	
+        for e in self.events:
+            self.timeseries[e] = []
+
+        #for e in self.perf_stats_events:
+         #   self.timeseries[e] = []
+        
+        print("IRTHAAAAAA")
+        #get pid of memcached    
+        cmd = ['pgrep', 'memcached']
+        result = subprocess.run(cmd, stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        out = result.stdout.decode('utf-8').splitlines() + result.stderr.decode('utf-8').splitlines()
+        self.pid=out[0]
 
     def find_perf_path(self):
         kernel_uname = os.popen('uname -a').read().strip()
@@ -91,21 +580,89 @@ class PerfEventProfiling(EventProfiling):
             m = re.match("(power/energy-.*/)\s*\[Kernel PMU event]", l)
             if m:
                 events.append(m.group(1))
+
+    @staticmethod
+    def get_microarchitectural_events():
+        events = []
+        #events.append("inst_retired.any")
+        #events.append("br_inst_retired.all_branches")
+        #events.append("br_misp_retired.all_branches")
+        #events.append("dtlb_load_misses.miss_causes_a_walk")
+        #events.append("dtlb_load_misses.stlb_hit")
+        #events.append("dtlb_load_misses.walk_active")
+        #events.append("itlb_misses.miss_causes_a_walk")
+        #events.append("itlb_misses.stlb_hit")
+        #events.append("l1d_pend_miss.pending_cycles")
+        #events.append("mem_inst_retired.all_loads")
+        #events.append("mem_inst_retired.all_stores")
+        #events.append("mem_load_retired.l2_miss")
+        #events.append("mem_load_retired.l2_hit")
+        #events.append("mem_load_retired.l3_miss")
+        #events.append("mem_load_retired.l3_hit")
+        events.append("instructions")
+        events.append("cycles")
+        #events.append("cache-misses")
+        #events.append("branch-misses")
+        #events.append("L1-dcache-load-misses")
+        #events.append("L1-icache-load-misses")
+        #events.append("GHz")
+        #events.append("insn per cycle")
+        #events.append("seconds time elapsed")
         return events
 
+    @staticmethod
+    def get_perf_stat_events():
+        ev=[]
+        #ev.append("GHz")
+        #ev.append("insn per cycle")
+        #ev.append("seconds time elapsed")
+        ev.append("instructions")
+        ev.append("cycles")
+        return ev
+
     def sample(self, timestamp):
-        events_str = ','.join(self.events)
-        cmd = ['sudo', self.perf_path, 'stat', '-a', '-e', events_str, 'sleep', str(self.sampling_length)]
+        
+        iterations_cycle=math.ceil((len(self.events))/4.0) #4 number of available perf counters provided by intel +1 in orer to run perf stat without events
+        event_index=self.iteration%iterations_cycle 
+        event_index=event_index*4
+        
+        #if self.iteration%(iterations_cycle-1)==0 and self.iteration!=0:
+            #events_str = ','.join(self.events[(event_index-4):-3])
+        if self.iteration%(iterations_cycle)==0:
+            events_str = ""
+        #else:
+         #   events_str = ','.join(self.events[(event_index-4):(event_index)])
+
+        if events_str=="":
+            cmd = ['sudo', self.perf_path, 'stat', '-a', '-p', self.pid,'sleep', str(self.sampling_length)]
+        else:
+            cmd = ['sudo', self.perf_path, 'stat', '-a', '-e', events_str,'-p', self.pid,'sleep', str(self.sampling_length)]
+        
+        
         result = subprocess.run(cmd, stdout=subprocess.PIPE,stderr=subprocess.PIPE)
         out = result.stdout.decode('utf-8').splitlines() + result.stderr.decode('utf-8').splitlines()
-        for e in self.events:
+        
+        for e in self.events[0:-3]:
+            
             for l in out:
                 l = l.lstrip()
                 m = re.match("(.*)\s+.*\s+{}".format(e), l)
+                
                 if m:
                     value = m.group(1)
                     self.timeseries[e].append((timestamp, str(float(value.replace(',', '')))))
-    
+
+        for e in self.perf_stats_events:
+            for l in out:
+                l = l.lstrip()
+                if e in l:
+                    value=l.split()[-(len(e.split())+1)]
+                    if e == "instructions":
+                        value=l.split()[-7]
+                    elif e == "cycles":
+                        value=l.split()[-5]
+                    self.timeseries[e].append((timestamp, str(float(value.replace(',', '')))))
+              
     # FIXME: Currently, we add a dummy zero sample when we finish sampling. 
     # This helps us to determine the sampling duration later when we analyze the stats
     # It would be nice to have a more clear solution
@@ -152,6 +709,7 @@ class MpstatProfiling(EventProfiling):
         self.timeseries['cpu_util'] = []
 
     def report(self):
+
         return self.timeseries
 
 class StateProfiling(EventProfiling):
@@ -207,42 +765,38 @@ class StateProfiling(EventProfiling):
 
     def report(self):
         return self.timeseries
-        
-class PkgStateProfiling(EventProfiling):
-    
-    def __init__(self, sampling_period=0, sampling_length = 1):
+
+class RaplCountersProfiling(EventProfiling):
+    raplcounters_path = '/sys/class/powercap/intel-rapl/'   
+
+    def __init__(self, sampling_period=0):
         super().__init__(sampling_period)
+        self.domain_names = {}
+        self.domain_names = RaplCountersProfiling.power_domain_names()
         self.timeseries = {}
 
-    
-    def sample(self, timestamp):
-        flag=False
-        cmd = ['sudo', 'powertop', '--csv=powertop_report.txt', '--time=30;']
-        result = subprocess.run(cmd, stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-        file = open('/users/ganton12/mcperf/powertop_report.txt', 'r')
-        lines = file.readlines()
-        for l in lines:
-            if 'Package;0' in l:
-                flag=True
-            if 'C1;' in l and flag==True:
-                res_val = str(l.split(';')[1].strip('%')).strip('%')
-                self.timeseries['Package.C1.time'].append((timestamp, res_val))
-            if 'C1E;' in l and flag==True:
-                res_val = str(l.split(';')[1].strip('%')).strip('%')
-                self.timeseries['Package.C1E.time'].append((timestamp, res_val))
-            if 'C2;' in l and flag==True:
-                res_val = str(l.split(';')[1].strip('%')).strip('%')
-                self.timeseries['Package.C2.time'].append((timestamp, res_val))
-            if 'C3;' in l and flag==True:
-                res_val = str(l.split(';')[1].strip('%')).strip('%')
-                self.timeseries['Package.C3.time'].append((timestamp, res_val))
-            if 'C6;' in l and flag==True:
-                res_val = str(l.split(';')[1].strip('%')).strip('%')
-                self.timeseries['Package.C6.time'].append((timestamp, res_val))
-                flag=False
+    @staticmethod
+    def power_domain_names():
+        raplcounters_path = RaplCountersProfiling.raplcounters_path
+        if not os.path.exists(raplcounters_path):
+            return []
+        domain_names = {}
         
+        #Find all supported domains of the system
+        for root, subdirs, files in os.walk(raplcounters_path):
+            for subdir in subdirs:
+                if "intel-rapl" in subdir:
+                    domain_names[open("{}/{}/{}".format(root, subdir,'name'), "r").read().strip()]= os.path.join(root,subdir,'energy_uj')    
+        return domain_names
+
+   
+    def sample(self, timestamp):
+         for domain in self.domain_names:
+                value = open(self.domain_names[domain], "r").read().strip()
+                self.timeseries.setdefault(domain, []).append((timestamp, value))
+       
+
     def interrupt_sample(self):
-        os.system('sudo pkill -9 powertop')
         pass
 
     def zerosample(self, timestamp):
@@ -250,29 +804,104 @@ class PkgStateProfiling(EventProfiling):
 
     def clear(self):
         self.timeseries = {}
-        self.timeseries['Package.C1.time'] = []
-        self.timeseries['Package.C1E.time'] = []
-        self.timeseries['Package.C2.time'] = []
-        self.timeseries['Package.C3.time'] = []
-        self.timeseries['Package.C6.time'] = []
 
     def report(self):
         return self.timeseries
+
+
+
+class pkg_turbostat_profiling(EventProfiling):
+    
+    def __init__(self, sampling_period=1, sampling_length=1):
+        super().__init__(sampling_period, sampling_length)
+        self.pkgcstates = self.get_available_pkgcstates()
+        logging.info('Available Package C states {}'.format(self.pkgcstates))
+        if self.pkgcstates != "\n":
+            self.timeseries = {}
+            for e in self.pkgcstates:
+                package= e.split('%')[0]
+                state=e.split('%')[2]
+                key = "Package{}.{}.{}".format(package, state, "residency")
+                
+                self.timeseries[key] = []
+
+    def get_available_pkgcstates(self):
+                                    
+        #result = call("/users/ganton12/mcperf/package-cstates.sh", shell=True) 
+        
+        result=subprocess.run(['/users/ganton12/mcperf/scripts/package-cstates.sh'], stdout=subprocess.PIPE)
+        line=result.stdout.decode('utf-8').splitlines()
+        return line
+       
+    def sample(self, timestamp):
+        #cmd = ['sudo', 'turbostat', '--quiet', '--interval', '9', '&', 'sleep', str(self.sampling_length), ';', 'sudo', 'pkill', 'turbostat' ]
+        cmd = ['/users/ganton12/mcperf/scripts/turbostatpackageresidency.sh', str(self.sampling_length)]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        
+        out = result.stdout.decode('utf-8').splitlines()
+        
+        flag=False
+        for s in self.pkgcstates:
+            for line in out:
+                for l in line.lstrip().split('\t'):
+                    #m = re.match("(.*)\s+.*\s+{}".format(s), l)
+                    if s.split('%')[2] in l:
+                        indexvalue=line.lstrip().split('\t').index(l)
+                        flag=True
+                        break
+                    if flag==True and line.lstrip().split('\t')[0] ==  s.split('%')[0] and line.lstrip().split('\t')[1]=='0':
+                        package= s.split('%')[0]
+                        state= s.split('%')[2]
+                        key = "Package{}.{}.{}".format(package, state, "residency")
+                        self.timeseries[key].append((timestamp, str(float(line.lstrip().split('\t')[indexvalue]))))
+                        flag=False
+                        break
+    
+    
+    # FIXME: Currently, we add a dummy zero sample when we finish sampling. 
+    # This helps us to determine the sampling duration later when we analyze the stats
+    # It would be nice to have a more clear solution
+    def zerosample(self, timestamp):
+    
+        for e in self.pkgcstates:
+            package= e.split('%')[0]
+            state=e.split('%')[2]
+            key = "Package{}.{}.{}".format(package, state, "residency")
+            self.timeseries[key].append((timestamp, str(0.0)))
+
+    def interrupt_sample(self):
+        os.system('sudo pkill turbostat')
+
+    def clear(self):
+        self.timeseries = {}
+        for e in self.pkgcstates:
+            package= e.split('%')[0]
+            state=e.split('%')[2]
+            key = "Package{}.{}.{}".format(package, state, "residency")
+            self.timeseries[key] = []
+
+    def report(self):
+        return self.timeseries
+
 
 class ProfilingService:
     def __init__(self, profilers):
         self.profilers = profilers
         
     def start(self):
+        
         for p in self.profilers:
-            p.start()        
-
+            print(p)
+            p.start()
+           
     def stop(self):
         for p in self.profilers:
-            p.stop()        
+            p.stop()
+        time.sleep(5)        
 
     def report(self):
         timeseries = {}
+        time.sleep(5)
         for p in self.profilers:
             t = p.report()
             timeseries = {**timeseries, **t}
@@ -280,15 +909,21 @@ class ProfilingService:
 
     def set(self, kv):
         print(kv)
+        
 
-def server(port):
-    perf_event_profiling = PerfEventProfiling(sampling_period=30,sampling_length=30)
-    mpstat_profiling = MpstatProfiling()
+def server(port,perf_iteration):
+    #perf_event_profiling = PerfEventProfiling(sampling_period=30,sampling_length=30,iteration=perf_iteration)
+    #mpstat_profiling = MpstatProfiling()
+    #vtune_pcie = VtunePcieProfiling(sampling_period=30, sampling_length=30)
+    pmu_topdown = TopDownProfiling(sampling_period=120, sampling_length=120, iteration=perf_iteration)
+   
+    #upi_profiling = PcmUpiProfiling(sampling_period=30, sampling_length=30)
+    #pcie_profiling = PcmPcieProfiling(sampling_period=120,sampling_length=120)
     state_profiling = StateProfiling(sampling_period=0)
-    #pkgstatemsr_profiling = PkgStateMSRProfiling(sampling_period=0)
-    #pkgstateturbostat_profiling = PkgStateTurbostatProfiling(sampling_period=30)
-    pkgstate_profiling = PkgStateProfiling(sampling_period=30,sampling_length=30)
-    profiling_service = ProfilingService([perf_event_profiling, mpstat_profiling, state_profiling, pkgstate_profiling])
+    rapl_profiling = RaplCountersProfiling(sampling_period=0)
+    #pkg_profiling = pkg_turbostat_profiling(sampling_period=30,sampling_length=30)
+    profiling_service = ProfilingService([ state_profiling, rapl_profiling, pmu_topdown])
+
     hostname = socket.gethostname().split('.')[0]
     server = SimpleXMLRPCServer((hostname, port), allow_none=True)
     server.register_instance(profiling_service)
@@ -357,7 +992,6 @@ class SetAction:
 
     @staticmethod
     def action(args):
-        print(args)
         with xmlrpc.client.ServerProxy("http://{}:{}/".format(args.hostname, args.port)) as proxy:
             proxy.set(args.rest)
 
@@ -378,6 +1012,10 @@ def parse_args():
         "-v", "--verbose", dest='verbose', action='store_true',
         help="verbose")
 
+    parser.add_argument(
+        "-i", "--iteration", dest='perf_iteration', type=int, default=1,
+        help="perf iteration to choose the right performance counters")
+
     subparsers = parser.add_subparsers(dest='subparser_name', help='sub-command help')
     actions = [StartAction, StopAction, ReportAction, SetAction]
     for a in actions:
@@ -397,7 +1035,7 @@ def parse_args():
         else:
             raise Exception('Attempt to run in client mode but no command is given')
     else:
-        server(args.port)
+        server(args.port,args.perf_iteration)
 
 def real_main():
     parse_args()

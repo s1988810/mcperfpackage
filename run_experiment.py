@@ -1,3 +1,4 @@
+import math
 import argparse
 import copy
 import functools
@@ -7,8 +8,12 @@ import sys
 import time 
 import os
 import configparser
-
+import socket
 import common 
+#from paramiko import SSHClient
+#from scp import SCPClient
+
+
 
 log = logging.getLogger(__name__)
 
@@ -30,7 +35,7 @@ def run_ansible_playbook(inventory, extravars=None, playbook=None, tags=None):
         tags = ""
     cmd = 'ansible-playbook -v -i {} -e "{}" {} {}'.format(inventory, extravars, tags, playbook)
     print(cmd)
-    r = os.system(cmd)
+    os.system(cmd)
 
 def set_uncore_freq(conf, freq_mhz):
     freq_hex=format(freq_mhz//100, 'x')
@@ -51,9 +56,50 @@ def set_core_freq(conf, freq_mhz):
        extravars=extravars, 
        playbook='ansible/configure_core_freq.yml')
 
-def run_profiler(conf):
+def run_socwatch(conf,name):
+    extravars = [
+        'MONITOR_TIME={}'.format("40"),
+        'OUTPUT_FILE={}'.format(name)]
+    run_ansible_playbook(
+        inventory='hosts',
+        extravars=extravars,
+        playbook='./ansible/profiler.yml',
+        tags='run_socwatch')
+
+def run_socwatch_io(conf,name):
+    extravars = [
+        'OUTPUT_FILE={}'.format(name)]
+    run_ansible_playbook(
+        inventory='hosts',
+        extravars=extravars,
+        playbook='./ansible/profiler.yml',
+        tags='run_socwatch_io')
+
+def run_socwatch_hotspots(conf,name):
+    extravars = [
+        'OUTPUT_FILE={}'.format(name)]
+    run_ansible_playbook(
+        inventory='hosts',
+        extravars=extravars,
+        playbook='./ansible/profiler.yml',
+        tags='run_socwatch_hotspots')
+
+def run_socwatch_ccstates(conf,name):
+    extravars = [
+        'MONITOR_TIME={}'.format("100"),
+        'OUTPUT_FILE={}'.format(name)]
+    run_ansible_playbook(
+        inventory='hosts',
+        extravars=extravars,
+        playbook='./ansible/profiler.yml',
+        tags='run_socwatch_ccstates')
+
+def run_profiler(conf,id):
+    extravars = [
+        'ITERATION={}'.format(id)]
     run_ansible_playbook(
         inventory='hosts', 
+        extravars=extravars,
         playbook='ansible/profiler.yml', 
         tags='run_profiler')
 
@@ -116,6 +162,12 @@ def configure_memcached_node(conf):
             time.sleep(30)
             pass
         os.system('ssh -n {} "cd ~/mcperf; sudo python3 configure.py -v --turbo={} --kernelconfig={} -v"'.format(node, conf['turbo'], conf['kernelconfig']))
+        if conf['ht'] == False:
+        	os.system('ssh -n {} "echo "forceoff" | sudo tee /sys/devices/system/cpu/smt/control"'.format(node))
+        os.system('ssh -n {} "sudo cpupower frequency-set -g performance"'.format(node))
+        if conf['turbo'] == False:
+        	os.system('ssh -n {} "~/mcperf/turbo-boost.sh disable"'.format(node))
+
 
 def agents_list():
     config = configparser.ConfigParser(allow_no_value=True)
@@ -131,14 +183,14 @@ def run_single_experiment(root_results_dir, name_prefix, conf, idx):
     results_dir_name = "{}-{}".format(name, idx)
     results_dir_path = os.path.join(root_results_dir, results_dir_name)
     memcached_results_dir_path = os.path.join(results_dir_path, 'memcached')
-
+   
     # cleanup any processes left by a previous run
     kill_profiler(conf)
     kill_remote(conf)
 
     # prepare profiler, memcached, and mcperf agents
-    run_profiler(conf)
     run_remote(conf)
+    run_profiler(conf,idx)
     exec_command("./memcache-perf/mcperf -s node1 --loadonly -r {} "
         "--iadist={} --keysize={} --valuesize={}"
         .format(conf.mcperf_records, conf.mcperf_iadist, conf.mcperf_keysize, conf.mcperf_valuesize))
@@ -147,25 +199,70 @@ def run_single_experiment(root_results_dir, name_prefix, conf, idx):
     stdout = exec_command(
         "./memcache-perf/mcperf -s node1 --noload -B -T 40 -Q 1000 -D 4 -C 4 "
         "{} -c 4 -q {} -t {} -r {} " 
-        "--iadist={} --keysize={} --valuesize={}"
-        .format(agents_parameter(), conf.mcperf_warmup_qps, conf.mcperf_warmup_time, conf.mcperf_records, conf.mcperf_iadist, conf.mcperf_keysize, conf.mcperf_valuesize))    
+        "--update={} --iadist={} --keysize={} --valuesize={}"
+        .format(agents_parameter(), conf.mcperf_warmup_qps, conf.mcperf_warmup_time, conf.mcperf_records, conf.mcperf_set_get_ratio, conf.mcperf_iadist, conf.mcperf_keysize, conf.mcperf_valuesize))    
+    
+    #create necessary results directory as I have to save statistics before I call profiler report
+    if not os.path.exists(root_results_dir):
+        print(root_results_dir)
+        os.mkdir(root_results_dir)
+    if not os.path.exists(results_dir_path):
+        print(results_dir_path)
+        os.mkdir(results_dir_path)
+    if not os.path.exists(memcached_results_dir_path):
+        print(memcached_results_dir_path)
+        os.mkdir(memcached_results_dir_path) 
+
+
+    cmd=['/users/ganton12/mcperf/scripts/memcached-proc-time.sh']
+    result = subprocess.run(cmd, stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    out = result.stdout.decode('utf-8').splitlines()
+    memcachedstats_results_path_name = os.path.join(results_dir_path, 'memcachedstatswarmup')
+    memcached_stats_file = open(memcachedstats_results_path_name, 'w');
+    for i in out:
+    	memcached_stats_file.write(str(i) + "\n")
+    memcached_stats_file.close()
 
     # do the measured run
-    exec_command("./profiler.py -n node1 start")
+    exec_command("python3 ./profiler.py -n node1 start")
+    #run_socwatch(conf,results_dir_name)
+    #run_socwatch_ccstates(conf,results_dir_name)
+    #run_socwatch_io(conf,results_dir_name)
+    #run_socwatch_hotspots(conf,results_dir_name)
     stdout = exec_command(
         "./memcache-perf/mcperf -s node1 --noload -B -T 40 -Q 1000 -D 4 -C 4 "
         "{} -c 4 -q {} -t {} -r {} "
-        "--iadist={} --keysize={} --valuesize={}"
-        .format(agents_parameter(), conf.mcperf_qps, conf.mcperf_time, conf.mcperf_records, conf.mcperf_iadist, conf.mcperf_keysize, conf.mcperf_valuesize))
-    exec_command("./profiler.py -n node1 stop")
+        "--update={} --iadist={} --keysize={} --valuesize={}"
+        .format(agents_parameter(), conf.mcperf_qps, conf.mcperf_time, conf.mcperf_records, conf.mcperf_set_get_ratio, conf.mcperf_iadist, conf.mcperf_keysize, conf.mcperf_valuesize))
+    exec_command("python3 ./profiler.py -n node1 stop")
+	
+   #check if socwatch is still processing
+    active_socwatch=exec_command("/users/ganton12/mcperf/scripts/check-socwatch-status.sh node1")
+    while (int(active_socwatch[0]) > 2):
+       time.sleep(30)
+       active_socwatch=exec_command("/users/ganton12/mcperf/scripts/check-socwatch-status.sh node1")
 
-    # write statistics 
-    exec_command("./profiler.py -n node1 report -d {}".format(memcached_results_dir_path))
+    exec_command("python3 ./profiler.py -n node1 report -d {}".format(memcached_results_dir_path))
+
     mcperf_results_path_name = os.path.join(results_dir_path, 'mcperf')
     with open(mcperf_results_path_name, 'w') as fo:
         for l in stdout:
             fo.write(l+'\n')
 
+    
+    # write memcached statistics
+    cmd=['/users/ganton12/mcperf/scripts/memcached-proc-time.sh']
+    result = subprocess.run(cmd, stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    out = result.stdout.decode('utf-8').splitlines()
+    memcachedstats_results_path_name = os.path.join(results_dir_path, 'memcachedstatsrun')
+    memcached_stats_file = open(memcachedstats_results_path_name, 'w');
+    for i in out:
+    	memcached_stats_file.write(str(i) + "\n")
+    memcached_stats_file.close()
+    
+    #move socwatch statistics to extra space because space at working directory is extremely limited
+    #os.system('ssh -n node1 "sudo mkdir /myextraspace/local/data/{}; sudo mv ~/{}* /myextraspace/local/data/{}"'.format(results_dir_name,results_dir_name,results_dir_name))
+ 
     # cleanup
     kill_remote(conf)
     kill_profiler(conf)
@@ -174,7 +271,7 @@ def run_single_experiment(root_results_dir, name_prefix, conf, idx):
 def run_multiple_experiments_with_varying_freq(root_results_dir, batch_name, system_conf, batch_conf, iter):
     configure_memcached_node(system_conf)
     name_prefix = "turbo={}-kernelconfig={}-".format(system_conf['turbo'], system_conf['kernelconfig'])
-    request_qps = [10000, 50000, 100000, 200000, 300000, 400000, 500000]
+    request_qps = [10000, 20000, 50000, 100000, 200000, 300000, 400000, 500000]
     root_results_dir = os.path.join(root_results_dir, batch_name)
     set_uncore_freq(system_conf, 1600)
     for freq in [1400, 1600, 1800, 2000, 2200, 2400]:
@@ -187,30 +284,46 @@ def run_multiple_experiments_with_varying_freq(root_results_dir, batch_name, sys
 
 def run_multiple_experiments(root_results_dir, batch_name, system_conf, batch_conf, iter):
     configure_memcached_node(system_conf)
-    name_prefix = "turbo={}-kernelconfig={}-".format(system_conf['turbo'], system_conf['kernelconfig'])
+    #exit()
+    time.sleep(500)
+    name_prefix = "turbo={}-kernelconfig={}-hyperthreading={}-".format(system_conf['turbo'], system_conf['kernelconfig'],system_conf['ht'])
     #request_qps = [10000, 50000, 100000, 200000, 300000, 400000, 500000, 1000000, 2000000]
     #request_qps = [10000, 50000, 100000, 200000, 300000, 400000, 500000, 600000, 700000, 800000]
-    request_qps = [50000]
+    #request_qps = [4000, 10000, 20000, 50000, 100000, 200000, 300000, 400000, 500000]
+    request_qps = [1500]
+    #request_qps = [500000, 400000, 300000, 200000, 100000, 50000, 20000, 10000, 4000]
     root_results_dir = os.path.join(root_results_dir, batch_name)
     set_uncore_freq(system_conf, 2000)
     for qps in request_qps:
         instance_conf = copy.copy(batch_conf)
         instance_conf.set('mcperf_qps', qps)
-        run_single_experiment(root_results_dir, name_prefix, instance_conf, iter)
-
-
+        #same work experiment
+        #time=int(int(instance_conf.mcperf_time)*min(request_qps)/qps)
+        #instance_conf.set('mcperf_time',time)
+        temp_iter=iter
+        iters_cycle=math.ceil(batch_conf.perf_counters/4.0)+1
+        for it in range(iters_cycle*(iter),iters_cycle*(iter+1)):
+            run_single_experiment(root_results_dir, name_prefix, instance_conf, it)
+            time.sleep(120)
 
 def main(argv):
     system_confs = [
 ##        {'turbo': True,  'kernelconfig': 'vanilla'},
 ##        {'turbo': False,  'kernelconfig': 'vanilla'},
-         {'turbo': False, 'kernelconfig': 'baseline'},
-#         {'turbo': False, 'kernelconfig': 'disable_c6'},
+#         {'turbo': False, 'kernelconfig': 'baseline', 'ht': False},
+#          {'turbo': False, 'kernelconfig': 'disable_c6'},
 #         {'turbo': True, 'kernelconfig': 'baseline'},
 #         {'turbo': False, 'kernelconfig': 'disable_cstates'},
-##         {'turbo': False, 'kernelconfig': 'disable_c6'},
+#         {'turbo': False, 'kernelconfig': 'disable_c6', 'ht': False},
 #         {'turbo': True, 'kernelconfig': 'disable_c6'},
-#         {'turbo': False, 'kernelconfig': 'disable_c1e_c6'},
+#          {'turbo': True, 'kernelconfig': 'disable_c1e_c6', 'ht': True},
+          {'turbo': False, 'kernelconfig': 'baseline', 'ht': False},
+#          {'turbo': False, 'kernelconfig': 'disable_c6', 'ht': False},
+          {'turbo': False, 'kernelconfig': 'disable_c1e_c6', 'ht': False},
+          {'turbo': False, 'kernelconfig': 'disable_cstates', 'ht': False},
+#          {'turbo': False, 'kernelconfig': 'baseline', 'ht': False},
+#          {'turbo': False, 'kernelconfig': 'disable_c1e_c6', 'ht': False, 'pstate': False},
+#          {'turbo': False, 'kernelconfig': 'disable_c1e_c6', 'ht': True},
 #         {'turbo': True, 'kernelconfig': 'disable_c1e_c6'},
 ##         {'turbo': False, 'kernelconfig': 'quick_c1'},
 ##         {'turbo': True, 'kernelconfig': 'quick_c1'},
@@ -230,13 +343,17 @@ def main(argv):
         'mcperf_records': 1000000,
         'mcperf_iadist': 'fb_ia',
         'mcperf_keysize': 'fb_key',
-        'mcperf_valuesize': 'fb_value'
+        'mcperf_valuesize': 'fb_value',
+        'perf_counters': 0, #21
+        'mcperf_set_get_ratio': 1
     })
+    
+   
     logging.getLogger('').setLevel(logging.INFO)
     if len(argv) < 1:
         raise Exception("Experiment name is missing")
     batch_name = argv[0]
-    for iter in range(0, 3):
+    for iter in range(1, 3):
         for system_conf in system_confs:
             run_multiple_experiments('/users/ganton12/data', batch_name, system_conf, batch_conf, iter)
 
